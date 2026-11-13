@@ -14,33 +14,53 @@ jobs:
     timeout-minutes: 360
 
     steps:
+      # ==========================================
+      # 1. CONFIGURAR USUARIO NEVOZ
+      # ==========================================
       - name: Configurar usuario NEVOZ
         shell: pwsh
         run: |
-          $username = "Nevoz"
-          $password = ConvertTo-SecureString "NevozPASS" -AsPlainText -Force
+          $ErrorActionPreference = "Stop"
 
-          if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
+          $username = "Nevoz"
+          $passwordText = "Nevoz@2026PC!"
+          $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
+
+          $user = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
+
+          if ($user) {
               Set-LocalUser -Name $username -Password $password
           } else {
-              New-LocalUser -Name $username -Password $password
+              New-LocalUser `
+                -Name $username `
+                -Password $password `
+                -FullName "NEVOZ SETUP" `
+                -Description "NEVOZ Remote Desktop User" `
+                -PasswordNeverExpires
           }
 
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
 
           Set-ItemProperty `
             -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
-            -Name "fDenyTSConnections" -Value 0
+            -Name "fDenyTSConnections" `
+            -Value 0
 
           Set-ItemProperty `
             -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
-            -Name "UserAuthentication" -Value 1
+            -Name "UserAuthentication" `
+            -Value 1
 
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          Write-Host "Usuario: Nevoz"
-          Write-Host "Senha: NevozPASS"
+          Write-Host "Usuario NEVOZ configurado."
 
+      # ==========================================
+      # 2. INSTALAR TAILSCALE
+      # ==========================================
       - name: Instalar Tailscale
         shell: pwsh
         env:
@@ -70,6 +90,9 @@ jobs:
 
           Write-Host "Tailscale conectado."
 
+      # ==========================================
+      # 3. VERIFICAR GPU
+      # ==========================================
       - name: Verificar placa de video
         shell: pwsh
         run: |
@@ -81,14 +104,20 @@ jobs:
             Write-Host "GPU: $($gpu.Name)"
             Write-Host "Driver: $($gpu.DriverVersion)"
             Write-Host "Memoria: $($gpu.AdapterRAM)"
+            Write-Host "Resolucao: $($gpu.CurrentHorizontalResolution)x$($gpu.CurrentVerticalResolution)"
           }
 
-          if (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue) {
+          $nvidia = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
+
+          if ($nvidia) {
             nvidia-smi
           } else {
             Write-Host "GPU NVIDIA dedicada nao detectada."
           }
 
+      # ==========================================
+      # 4. PREPARAR ARMAZENAMENTO
+      # ==========================================
       - name: Preparar armazenamento
         shell: pwsh
         run: |
@@ -100,6 +129,9 @@ jobs:
 
           Write-Host "Pasta NEVOZ-DADOS preparada."
 
+      # ==========================================
+      # 5. RESTAURAR BACKUP
+      # ==========================================
       - name: Restaurar backup anterior
         uses: actions/download-artifact@v4
         continue-on-error: true
@@ -107,6 +139,9 @@ jobs:
           name: nevoz-dados
           path: C:\NEVOZ-DADOS
 
+      # ==========================================
+      # 6. ATIVAR RDP
+      # ==========================================
       - name: Ativar conexao RDP
         shell: pwsh
         run: |
@@ -124,12 +159,19 @@ jobs:
 
           Write-Host "RDP ativo na porta 3389."
 
+      # ==========================================
+      # 7. MOSTRAR DADOS DE CONEXAO
+      # ==========================================
       - name: Mostrar dados de conexao
         shell: pwsh
         run: |
           $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
 
           $ip = & $tailscale ip -4 | Select-Object -First 1
+
+          if ([string]::IsNullOrWhiteSpace($ip)) {
+            throw "Nao foi possivel obter o IP Tailscale."
+          }
 
           Write-Host ""
           Write-Host "=================================="
@@ -139,9 +181,12 @@ jobs:
           Write-Host "HOST: $ip"
           Write-Host "PORTA: 3389"
           Write-Host "USUARIO: Nevoz"
-          Write-Host "SENHA: NevozPASS"
+          Write-Host "SENHA: Nevoz@2026PC!"
           Write-Host "=================================="
 
+      # ==========================================
+      # 8. MANTER AMBIENTE ATIVO
+      # ==========================================
       - name: Manter ambiente ativo
         shell: pwsh
         run: |
@@ -169,6 +214,9 @@ jobs:
             Start-Sleep -Seconds 60
           }
 
+      # ==========================================
+      # 9. SALVAR PROGRESSO
+      # ==========================================
       - name: Salvar progresso
         if: always()
         uses: actions/upload-artifact@v4
