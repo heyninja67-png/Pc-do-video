@@ -1,4 +1,3 @@
-
 name: NEVOZ SETUP
 
 on:
@@ -6,7 +5,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   NEVOZ-SETUP:
@@ -14,9 +12,10 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      # ==========================================
+
+      # ==========================================================
       # 1. CONFIGURAR USUARIO NEVOZ
-      # ==========================================
+      # ==========================================================
       - name: Configurar usuario NEVOZ
         shell: pwsh
         run: |
@@ -26,130 +25,100 @@ jobs:
           $passwordText = "NvZ-PC-2026!Cloud#82"
           $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
 
-          Write-Host "Verificando politica de senhas..."
-          net accounts
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host "      CONFIGURANDO USUARIO NEVOZ"
+          Write-Host "======================================"
 
           $user = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
 
           if ($user) {
-              Set-LocalUser -Name $username -Password $password
-          } else {
+              Write-Host "Usuario Nevoz ja existe."
+
+              try {
+                  Set-LocalUser -Name $username -Password $password
+                  Write-Host "Senha do usuario atualizada."
+              }
+              catch {
+                  Write-Warning "Nao foi possivel atualizar a senha: $($_.Exception.Message)"
+              }
+          }
+          else {
               New-LocalUser `
                 -Name $username `
                 -Password $password `
-                -FullName "NEVOZ SETUP" `
+                -FullName "Nevoz" `
                 -Description "NEVOZ Remote Desktop User" `
                 -AccountNeverExpires
+
+              Write-Host "Usuario Nevoz criado."
           }
 
-          $group = Get-LocalGroup -SID "S-1-5-32-555"
+          # Coloca Nevoz como administrador
+          $adminGroup = Get-LocalGroup -SID "S-1-5-32-544"
 
-          $members = Get-LocalGroupMember -Group $group -ErrorAction SilentlyContinue
+          $isAdmin = Get-LocalGroupMember `
+            -Group $adminGroup `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -eq "$env:COMPUTERNAME\$username"
+            }
 
-          if ($members.Name -notcontains "$env:COMPUTERNAME\$username") {
-              Add-LocalGroupMember -Group $group -Member $username
+          if (-not $isAdmin) {
+              Add-LocalGroupMember `
+                -Group $adminGroup `
+                -Member $username
+
+              Write-Host "Nevoz adicionado ao grupo Administrators."
+          }
+          else {
+              Write-Host "Nevoz ja e administrador."
           }
 
-          Set-ItemProperty `
-            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
-            -Name "fDenyTSConnections" -Value 0
+          # Garante que a conta esteja habilitada
+          Enable-LocalUser -Name $username
 
-          Set-ItemProperty `
-            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
-            -Name "UserAuthentication" -Value 1
+          Write-Host ""
+          Write-Host "Usuario: Nevoz"
+          Write-Host "Administrador: SIM"
+          Write-Host "======================================"
 
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-
-          Write-Host "Usuario NEVOZ configurado."
-
-      # ==========================================
-      # 2. INSTALAR TAILSCALE
-      # ==========================================
-      - name: Instalar Tailscale
+      # ==========================================================
+      # 2. CONFIGURAR RDP
+      # ==========================================================
+      - name: Configurar RDP
         shell: pwsh
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTHKEY)) {
-            throw "Configure o secret TAILSCALE_AUTHKEY."
-          }
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host "          CONFIGURANDO RDP"
+          Write-Host "======================================"
 
-          winget install --id Tailscale.Tailscale `
-            --silent --accept-package-agreements `
-            --accept-source-agreements
+          # Ativar RDP
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
 
-          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+          # Exigir NLA
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 1
 
-          if (!(Test-Path $tailscale)) {
-            throw "Tailscale nao encontrado."
-          }
+          # Liberar firewall
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop"
 
-          Start-Service Tailscale -ErrorAction SilentlyContinue
+          # Garantir que o servico esteja habilitado
+          Set-Service `
+            -Name TermService `
+            -StartupType Automatic
 
-          & $tailscale up --authkey=$env:TAILSCALE_AUTHKEY
-
-          Start-Sleep -Seconds 10
-
-          Write-Host "Tailscale conectado."
-
-      # ==========================================
-      # 3. VERIFICAR GPU
-      # ==========================================
-      - name: Verificar placa de video
-        shell: pwsh
-        run: |
-          Write-Host "=== NEVOZ SETUP GPU CHECK ==="
-
-          $gpus = Get-CimInstance Win32_VideoController
-
-          foreach ($gpu in $gpus) {
-            Write-Host "GPU: $($gpu.Name)"
-            Write-Host "Driver: $($gpu.DriverVersion)"
-            Write-Host "Memoria: $($gpu.AdapterRAM)"
-            Write-Host "Resolucao: $($gpu.CurrentHorizontalResolution)x$($gpu.CurrentVerticalResolution)"
-          }
-
-          $nvidia = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
-
-          if ($nvidia) {
-            nvidia-smi
-          } else {
-            Write-Host "GPU NVIDIA dedicada nao detectada."
-          }
-
-      # ==========================================
-      # 4. PREPARAR ARMAZENAMENTO
-      # ==========================================
-      - name: Preparar armazenamento
-        shell: pwsh
-        run: |
-          $path = "C:\NEVOZ-DADOS"
-
-          New-Item -ItemType Directory -Path $path -Force | Out-Null
-
-          icacls.exe $path /grant '*S-1-5-32-545:(OI)(CI)M' /T /C
-
-          Write-Host "Pasta NEVOZ-DADOS preparada."
-
-      # ==========================================
-      # 5. RESTAURAR BACKUP
-      # ==========================================
-      - name: Restaurar backup anterior
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: nevoz-dados
-          path: C:\NEVOZ-DADOS
-
-      # ==========================================
-      # 6. ATIVAR RDP
-      # ==========================================
-      - name: Ativar conexao RDP
-        shell: pwsh
-        run: |
           Restart-Service TermService -Force
+
           Start-Sleep -Seconds 5
 
           $listener = Get-NetTCPConnection `
@@ -157,76 +126,219 @@ jobs:
             -State Listen `
             -ErrorAction SilentlyContinue
 
-          if (!$listener) {
-            throw "RDP nao esta escutando na porta 3389."
+          if (-not $listener) {
+              throw "RDP nao esta escutando na porta 3389."
           }
 
-          Write-Host "RDP ativo na porta 3389."
+          Write-Host "RDP ativo."
+          Write-Host "Porta: 3389"
 
-      # ==========================================
-      # 7. MOSTRAR DADOS DE CONEXAO
-      # ==========================================
+      # ==========================================================
+      # 3. CONFIGURAR TAILSCALE
+      # ==========================================================
+      - name: Instalar e configurar Tailscale
+        shell: pwsh
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host "        CONFIGURANDO TAILSCALE"
+          Write-Host "======================================"
+
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTHKEY)) {
+              throw "O secret TAILSCALE_AUTHKEY nao foi configurado."
+          }
+
+          winget install `
+            --id Tailscale.Tailscale `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements
+
+          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscale)) {
+              throw "tailscale.exe nao encontrado."
+          }
+
+          Start-Service Tailscale -ErrorAction SilentlyContinue
+
+          Start-Sleep -Seconds 5
+
+          & $tailscale up "--authkey=$env:TAILSCALE_AUTHKEY"
+
+          Start-Sleep -Seconds 10
+
+          $status = & $tailscale status
+
+          Write-Host ""
+          Write-Host "Tailscale conectado."
+          Write-Host $status
+
+      # ==========================================================
+      # 4. DETECTAR GPU
+      # ==========================================================
+      - name: Verificar GPU
+        shell: pwsh
+        run: |
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host "             GPU CHECK"
+          Write-Host "======================================"
+
+          $gpus = Get-CimInstance Win32_VideoController
+
+          if (-not $gpus) {
+              Write-Host "Nenhuma GPU detectada."
+          }
+          else {
+              foreach ($gpu in $gpus) {
+                  Write-Host ""
+                  Write-Host "GPU: $($gpu.Name)"
+                  Write-Host "Driver: $($gpu.DriverVersion)"
+                  Write-Host "Memoria: $($gpu.AdapterRAM)"
+                  Write-Host "Resolucao: $($gpu.CurrentHorizontalResolution)x$($gpu.CurrentVerticalResolution)"
+              }
+          }
+
+          $nvidia = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
+
+          if ($nvidia) {
+              Write-Host ""
+              Write-Host "NVIDIA detectada:"
+              nvidia-smi
+          }
+          else {
+              Write-Host ""
+              Write-Host "NVIDIA dedicada nao detectada."
+          }
+
+      # ==========================================================
+      # 5. VERIFICAR USUARIO E ADMINISTRADOR
+      # ==========================================================
+      - name: Verificar permissao administrativa
+        shell: pwsh
+        run: |
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host "       VERIFICACAO DE ADMIN"
+          Write-Host "======================================"
+
+          $user = Get-LocalUser -Name "Nevoz"
+
+          Write-Host "Usuario: $($user.Name)"
+          Write-Host "Ativo: $($user.Enabled)"
+
+          $groups = Get-LocalGroupMember `
+            -Group "Administrators" `
+            -ErrorAction SilentlyContinue
+
+          $found = $groups | Where-Object {
+              $_.Name -eq "$env:COMPUTERNAME\Nevoz"
+          }
+
+          if ($found) {
+              Write-Host "Nevoz e ADMINISTRADOR: SIM"
+          }
+          else {
+              throw "Nevoz nao esta no grupo Administrators."
+          }
+
+      # ==========================================================
+      # 6. MOSTRAR DADOS DE CONEXAO
+      # ==========================================================
       - name: Mostrar dados de conexao
         shell: pwsh
         run: |
           $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
 
-          $ip = & $tailscale ip -4 | Select-Object -First 1
+          $ip = & $tailscale ip -4 |
+            Select-Object -First 1
 
           if ([string]::IsNullOrWhiteSpace($ip)) {
-            throw "Nao foi possivel obter o IP Tailscale."
+              throw "Nao foi possivel obter o IP Tailscale."
           }
 
           Write-Host ""
-          Write-Host "=================================="
-          Write-Host "          NEVOZ SETUP"
-          Write-Host "=================================="
-          Write-Host "IP: $ip"
-          Write-Host "HOST: $ip"
+          Write-Host "=============================================="
+          Write-Host "              NEVOZ SETUP"
+          Write-Host "=============================================="
+          Write-Host ""
+          Write-Host "IP/HOST: $ip"
           Write-Host "PORTA: 3389"
           Write-Host "USUARIO: Nevoz"
-          Write-Host "SENHA: NvZ-PC-2026!Cloud#82"
-          Write-Host "=================================="
+          Write-Host "ADMINISTRADOR: SIM"
+          Write-Host ""
+          Write-Host "Use o Windows App no Android."
+          Write-Host "O dispositivo Android precisa estar"
+          Write-Host "conectado a mesma rede Tailscale."
+          Write-Host ""
+          Write-Host "=============================================="
 
-      # ==========================================
-      # 8. MANTER AMBIENTE ATIVO
-      # ==========================================
+      # ==========================================================
+      # 7. MANTER O RUNNER ATIVO
+      # ==========================================================
       - name: Manter ambiente ativo
         shell: pwsh
         run: |
           $deadline = (Get-Date).AddMinutes(345)
 
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host "      NEVOZ SETUP ESTA ATIVO"
+          Write-Host "======================================"
+
           while ((Get-Date) -lt $deadline) {
-            Write-Host "NEVOZ SETUP ativo: $(Get-Date)"
 
-            $rdp = Get-NetTCPConnection `
-              -LocalPort 3389 `
-              -State Listen `
-              -ErrorAction SilentlyContinue
+              Write-Host ""
+              Write-Host "NEVOZ SETUP ativo: $(Get-Date)"
 
-            if (!$rdp) {
-              Write-Warning "RDP parado. Tentando reiniciar."
-              Restart-Service TermService -Force
-            }
+              # Verificar RDP
+              $rdp = Get-NetTCPConnection `
+                -LocalPort 3389 `
+                -State Listen `
+                -ErrorAction SilentlyContinue
 
-            $ts = Get-Service Tailscale -ErrorAction SilentlyContinue
+              if (-not $rdp) {
+                  Write-Warning "RDP parou. Reiniciando..."
 
-            if ($ts -and $ts.Status -ne "Running") {
-              Start-Service Tailscale
-            }
+                  Restart-Service TermService -Force
 
-            Start-Sleep -Seconds 60
+                  Start-Sleep -Seconds 5
+              }
+
+              # Verificar Tailscale
+              $ts = Get-Service Tailscale `
+                -ErrorAction SilentlyContinue
+
+              if ($ts) {
+                  if ($ts.Status -ne "Running") {
+                      Write-Warning "Tailscale parou. Reiniciando..."
+
+                      Start-Service Tailscale
+
+                      Start-Sleep -Seconds 5
+                  }
+              }
+
+              # Mostrar novamente o IP
+              $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+              if (Test-Path $tailscale) {
+                  $ip = & $tailscale ip -4 |
+                    Select-Object -First 1
+
+                  Write-Host "IP Tailscale: $ip"
+              }
+
+              Write-Host "RDP: OK"
+              Write-Host "Tailscale: OK"
+
+              Start-Sleep -Seconds 60
           }
 
-      # ==========================================
-      # 9. SALVAR PROGRESSO
-      # ==========================================
-      - name: Salvar progresso
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: nevoz-dados
-          path: C:\NEVOZ-DADOS
-          if-no-files-found: warn
-          retention-days: 90
-          compression-level: 6
+          Write-Host ""
+          Write-Host "Tempo maximo do runner atingido."
