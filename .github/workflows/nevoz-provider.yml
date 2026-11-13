@@ -1,0 +1,137 @@
+name: NEVOZ Provider
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [nevoz-start]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nevoz-provider
+  cancel-in-progress: false
+
+jobs:
+  start-provider:
+    # Este computador precisa ser seu servidor Windows próprio.
+    # Configure a etiqueta nevoz-gpu no runner se ele tiver GPU.
+    runs-on: [self-hosted, Windows, X64, nevoz-gpu]
+
+    timeout-minutes: 10
+
+    steps:
+      - name: Verificar servidor
+        shell: powershell
+        run: |
+          Write-Host "NEVOZ Provider iniciando..."
+
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Host "Sistema: $($os.Caption)"
+          Write-Host "Memoria total: $([math]::Round($os.TotalVisibleMemorySize / 1MB, 2)) GB"
+
+      - name: Verificar GPU
+        shell: powershell
+        run: |
+          $gpus = Get-CimInstance Win32_VideoController
+
+          foreach ($gpu in $gpus) {
+            Write-Host "GPU: $($gpu.Name)"
+            Write-Host "Driver: $($gpu.DriverVersion)"
+            Write-Host "Resolucao: $($gpu.CurrentHorizontalResolution)x$($gpu.CurrentVerticalResolution)"
+          }
+
+          if (-not $gpus) {
+            Write-Warning "Nenhuma GPU foi detectada."
+          }
+
+      - name: Configurar acesso remoto seguro
+        shell: powershell
+        env:
+          NEVOZ_RDP_PASSWORD: ${{ secrets.NEVOZ_RDP_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:NEVOZ_RDP_PASSWORD)) {
+            throw "Configure NEVOZ_RDP_PASSWORD nos secrets."
+          }
+
+          $securePassword = ConvertTo-SecureString `
+            $env:NEVOZ_RDP_PASSWORD -AsPlainText -Force
+
+          $username = "NEVOZUser"
+
+          $user = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
+
+          if ($user) {
+            Set-LocalUser -Name $username -Password $securePassword
+          } else {
+            New-LocalUser `
+              -Name $username `
+              -Password $securePassword `
+              -Description "NEVOZ Cloud PC"
+          }
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 1
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          # Limita as regras RDP ao intervalo de enderecos Tailscale.
+          Get-NetFirewallRule -DisplayGroup "Remote Desktop" |
+            Get-NetFirewallAddressFilter |
+            Set-NetFirewallAddressFilter -RemoteAddress "100.64.0.0/10"
+
+          Restart-Service TermService -Force
+
+          Write-Host "Acesso remoto configurado."
+          Write-Host "Usuario: $username"
+          Write-Host "Senha: configurada com seguranca."
+
+      - name: Verificar Tailscale
+        shell: powershell
+        run: |
+          $tailscale = Get-Service -Name Tailscale -ErrorAction SilentlyContinue
+
+          if (-not $tailscale) {
+            throw "Tailscale nao esta instalado no servidor."
+          }
+
+          if ($tailscale.Status -ne "Running") {
+            Start-Service Tailscale
+          }
+
+          $ts = Get-Command tailscale.exe -ErrorAction SilentlyContinue
+
+          if ($ts) {
+            tailscale.exe status
+            tailscale.exe ip -4
+          }
+
+      - name: Verificar RDP
+        shell: powershell
+        run: |
+          $listener = Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if ($listener) {
+            Write-Host "RDP esta escutando na porta 3389."
+          } else {
+            throw "O RDP nao esta escutando na porta 3389."
+          }
+
+          Write-Host "NEVOZ Provider pronto."
