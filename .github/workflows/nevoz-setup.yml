@@ -1,0 +1,180 @@
+
+name: NEVOZ SETUP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  NEVOZ-SETUP:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Configurar usuario NEVOZ
+        shell: pwsh
+        run: |
+          $username = "Nevoz"
+          $password = ConvertTo-SecureString "NevozPASS" -AsPlainText -Force
+
+          if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
+              Set-LocalUser -Name $username -Password $password
+          } else {
+              New-LocalUser -Name $username -Password $password
+          }
+
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" -Value 1
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          Write-Host "Usuario: Nevoz"
+          Write-Host "Senha: NevozPASS"
+
+      - name: Instalar Tailscale
+        shell: pwsh
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTHKEY)) {
+            throw "Configure o secret TAILSCALE_AUTHKEY."
+          }
+
+          winget install --id Tailscale.Tailscale `
+            --silent --accept-package-agreements `
+            --accept-source-agreements
+
+          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+          if (!(Test-Path $tailscale)) {
+            throw "Tailscale nao encontrado."
+          }
+
+          Start-Service Tailscale -ErrorAction SilentlyContinue
+
+          & $tailscale up --authkey=$env:TAILSCALE_AUTHKEY
+
+          Start-Sleep -Seconds 10
+
+          Write-Host "Tailscale conectado."
+
+      - name: Verificar placa de video
+        shell: pwsh
+        run: |
+          Write-Host "=== NEVOZ SETUP GPU CHECK ==="
+
+          $gpus = Get-CimInstance Win32_VideoController
+
+          foreach ($gpu in $gpus) {
+            Write-Host "GPU: $($gpu.Name)"
+            Write-Host "Driver: $($gpu.DriverVersion)"
+            Write-Host "Memoria: $($gpu.AdapterRAM)"
+          }
+
+          if (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue) {
+            nvidia-smi
+          } else {
+            Write-Host "GPU NVIDIA dedicada nao detectada."
+          }
+
+      - name: Preparar armazenamento
+        shell: pwsh
+        run: |
+          $path = "C:\NEVOZ-DADOS"
+
+          New-Item -ItemType Directory -Path $path -Force | Out-Null
+
+          icacls.exe $path /grant '*S-1-5-32-545:(OI)(CI)M' /T /C
+
+          Write-Host "Pasta NEVOZ-DADOS preparada."
+
+      - name: Restaurar backup anterior
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: nevoz-dados
+          path: C:\NEVOZ-DADOS
+
+      - name: Ativar conexao RDP
+        shell: pwsh
+        run: |
+          Restart-Service TermService -Force
+          Start-Sleep -Seconds 5
+
+          $listener = Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if (!$listener) {
+            throw "RDP nao esta escutando na porta 3389."
+          }
+
+          Write-Host "RDP ativo na porta 3389."
+
+      - name: Mostrar dados de conexao
+        shell: pwsh
+        run: |
+          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+          $ip = & $tailscale ip -4 | Select-Object -First 1
+
+          Write-Host ""
+          Write-Host "=================================="
+          Write-Host "          NEVOZ SETUP"
+          Write-Host "=================================="
+          Write-Host "IP: $ip"
+          Write-Host "HOST: $ip"
+          Write-Host "PORTA: 3389"
+          Write-Host "USUARIO: Nevoz"
+          Write-Host "SENHA: NevozPASS"
+          Write-Host "=================================="
+
+      - name: Manter ambiente ativo
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddMinutes(345)
+
+          while ((Get-Date) -lt $deadline) {
+            Write-Host "NEVOZ SETUP ativo: $(Get-Date)"
+
+            $rdp = Get-NetTCPConnection `
+              -LocalPort 3389 `
+              -State Listen `
+              -ErrorAction SilentlyContinue
+
+            if (!$rdp) {
+              Write-Warning "RDP parado. Tentando reiniciar."
+              Restart-Service TermService -Force
+            }
+
+            $ts = Get-Service Tailscale -ErrorAction SilentlyContinue
+
+            if ($ts -and $ts.Status -ne "Running") {
+              Start-Service Tailscale
+            }
+
+            Start-Sleep -Seconds 60
+          }
+
+      - name: Salvar progresso
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nevoz-dados
+          path: C:\NEVOZ-DADOS
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
