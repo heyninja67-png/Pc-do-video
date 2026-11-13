@@ -23,8 +23,11 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $username = "Nevoz"
-          $passwordText = "Nevoz@2026PC!"
+          $passwordText = "NvZ-PC-2026!Cloud#82"
           $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
+
+          Write-Host "Verificando politica de senhas..."
+          net accounts
 
           $user = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
 
@@ -36,23 +39,24 @@ jobs:
                 -Password $password `
                 -FullName "NEVOZ SETUP" `
                 -Description "NEVOZ Remote Desktop User" `
-                -PasswordNeverExpires
+                -AccountNeverExpires
           }
 
-          Add-LocalGroupMember `
-            -Group "Remote Desktop Users" `
-            -Member $username `
-            -ErrorAction SilentlyContinue
+          $group = Get-LocalGroup -SID "S-1-5-32-555"
+
+          $members = Get-LocalGroupMember -Group $group -ErrorAction SilentlyContinue
+
+          if ($members.Name -notcontains "$env:COMPUTERNAME\$username") {
+              Add-LocalGroupMember -Group $group -Member $username
+          }
 
           Set-ItemProperty `
             -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
-            -Name "fDenyTSConnections" `
-            -Value 0
+            -Name "fDenyTSConnections" -Value 0
 
           Set-ItemProperty `
             -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
-            -Name "UserAuthentication" `
-            -Value 1
+            -Name "UserAuthentication" -Value 1
 
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
@@ -181,7 +185,7 @@ jobs:
           Write-Host "HOST: $ip"
           Write-Host "PORTA: 3389"
           Write-Host "USUARIO: Nevoz"
-          Write-Host "SENHA: Nevoz@2026PC!"
+          Write-Host "SENHA: NvZ-PC-2026!Cloud#82"
           Write-Host "=================================="
 
       # ==========================================
